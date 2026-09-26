@@ -1,0 +1,7 @@
+{
+  "name": "notehub",
+  "version": "0.1.0",
+  "buildCommand": "npm run build",
+  "outputDirectory": "dist",
+  "framework": "vite"
+}
