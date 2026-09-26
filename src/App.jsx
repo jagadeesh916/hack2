@@ -6,6 +6,7 @@ import DashboardPage from './pages/DashboardPage'
 import CreateNotePage from './pages/CreateNotePage'
 import ViewNotePage from './pages/ViewNotePage'
 import LandingPage from './pages/LandingPage'
+import ExplorePage from './pages/ExplorePage'
 
 function ProtectedRoute({ children }) {
   const { user, loading } = useAuth()
@@ -30,6 +31,7 @@ function AppRoutes() {
       <Route path="/" element={user ? <Navigate to="/dashboard" replace /> : <LandingPage />} />
       <Route path="/auth" element={user ? <Navigate to="/dashboard" replace /> : <AuthPage />} />
       <Route path="/notes/:id" element={<ViewNotePage />} />
+      <Route path="/explore" element={<ExplorePage />} />
       <Route
         path="/dashboard"
         element={
