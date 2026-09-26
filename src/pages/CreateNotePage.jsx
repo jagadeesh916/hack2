@@ -52,8 +52,9 @@ export default function CreateNotePage() {
 
       // 2. Call the Edge Function to generate content
       setStatusMsg('Calling AI — this may take up to 30 seconds on a cold start…')
-      const session = await supabase.auth.getSession()
-      const accessToken = session.data.session?.access_token
+      // Always refresh session to avoid JWT expiry errors
+      const { data: { session } } = await supabase.auth.refreshSession()
+      const accessToken = session?.access_token
 
       const fnRes = await fetch(
         `${SUPABASE_FUNCTIONS_URL}/generate-notes`,
