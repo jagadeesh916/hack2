@@ -1,8 +1,10 @@
 // supabase/functions/generate-notes/index.ts
-// Uses Google Gemini 1.5 Flash (free tier) via REST API
+// Uses Groq API (free tier) - llama-3.1-8b-instant
 
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts"
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2"
+
+const GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -29,26 +31,26 @@ function extractJSON(text: string): string {
   return cleaned.slice(start, end + 1)
 }
 
-async function callGemini(
-  prompt: string,
-  geminiApiKey: string,
+async function callGroq(
+  messages: { role: string; content: string }[],
+  groqApiKey: string,
 ): Promise<string> {
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${geminiApiKey}`
-
   const controller = new AbortController()
   const timeout = setTimeout(() => controller.abort(), 30_000)
 
   let response: Response
   try {
-    response = await fetch(url, {
+    response = await fetch(GROQ_API_URL, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        Authorization: `Bearer ${groqApiKey}`,
+        "Content-Type": "application/json",
+      },
       body: JSON.stringify({
-        contents: [{ parts: [{ text: prompt }] }],
-        generationConfig: {
-          temperature: 0.4,
-          maxOutputTokens: 1024,
-        },
+        model: "llama-3.1-8b-instant",
+        messages,
+        max_tokens: 1024,
+        temperature: 0.4,
       }),
       signal: controller.signal,
     })
@@ -58,29 +60,36 @@ async function callGemini(
 
   if (!response.ok) {
     const text = await response.text()
-    throw new Error(`Gemini API error ${response.status}: ${text}`)
+    throw new Error(`Groq API error ${response.status}: ${text}`)
   }
 
   const data = await response.json()
-  const rawText: string = data?.candidates?.[0]?.content?.parts?.[0]?.text ?? ""
-  console.log("Gemini raw response:", rawText.slice(0, 500))
+  const rawText: string = data?.choices?.[0]?.message?.content ?? ""
+  console.log("Groq raw response:", rawText.slice(0, 500))
   return rawText
 }
 
 async function generateWithRetry(
   rawNotes: string,
   englishLevel: string,
-  geminiApiKey: string,
+  groqApiKey: string,
 ): Promise<unknown> {
-  const prompt = `${SYSTEM_PROMPT(englishLevel)}\n\nStudent notes:\n${rawNotes}`
+  const messages = [
+    { role: "system", content: SYSTEM_PROMPT(englishLevel) },
+    { role: "user", content: `Student notes:\n${rawNotes}` },
+  ]
 
-  const rawText1 = await callGemini(prompt, geminiApiKey)
+  const rawText1 = await callGroq(messages, groqApiKey)
   try {
     return JSON.parse(extractJSON(rawText1))
   } catch (_e) {
     console.warn("First parse failed, retrying with repair prompt…")
-    const repairPrompt = `${prompt}\n\nYour previous output was not valid JSON. Reply with ONLY the JSON object, starting with { and ending with }.`
-    const rawText2 = await callGemini(repairPrompt, geminiApiKey)
+    const repairMessages = [
+      ...messages,
+      { role: "assistant", content: rawText1 },
+      { role: "user", content: "Your previous output was not valid JSON. Reply with ONLY the JSON object, starting with { and ending with }." },
+    ]
+    const rawText2 = await callGroq(repairMessages, groqApiKey)
     return JSON.parse(extractJSON(rawText2))
   }
 }
@@ -91,9 +100,9 @@ serve(async (req: Request) => {
   }
 
   try {
-    const geminiApiKey = Deno.env.get("GEMINI_API_KEY")
-    if (!geminiApiKey) {
-      return new Response(JSON.stringify({ error: "GEMINI_API_KEY not set" }), {
+    const groqApiKey = Deno.env.get("GROQ_API_KEY")
+    if (!groqApiKey) {
+      return new Response(JSON.stringify({ error: "GROQ_API_KEY not set" }), {
         status: 500,
         headers: { ...corsHeaders, "Content-Type": "application/json" },
       })
@@ -130,7 +139,7 @@ serve(async (req: Request) => {
       )
     }
 
-    const generated_content = await generateWithRetry(rawNotes, englishLevel, geminiApiKey)
+    const generated_content = await generateWithRetry(rawNotes, englishLevel, groqApiKey)
 
     return new Response(
       JSON.stringify({ generated_content, noteSetId }),
