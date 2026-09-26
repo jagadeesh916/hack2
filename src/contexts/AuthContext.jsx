@@ -8,8 +8,15 @@ export function AuthProvider({ children }) {
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      setUser(session?.user ?? null)
+    // getSession returns cached session; refreshSession ensures it's valid
+    supabase.auth.getSession().then(async ({ data: { session } }) => {
+      if (session) {
+        // Proactively refresh if close to expiry or already expired
+        const { data: refreshed } = await supabase.auth.refreshSession()
+        setUser(refreshed.session?.user ?? session.user ?? null)
+      } else {
+        setUser(null)
+      }
       setLoading(false)
     })
 
