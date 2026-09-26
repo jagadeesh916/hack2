@@ -39,7 +39,7 @@ async function callHF(
   hfApiKey: string,
 ): Promise<{ rawText: string; warmingUp: boolean }> {
   const body = JSON.stringify({
-    model: "HuggingFaceH4/zephyr-7b-beta",
+    model: "Qwen/Qwen2.5-7B-Instruct",
     messages,
     max_tokens: 1024,
     temperature: 0.4,
