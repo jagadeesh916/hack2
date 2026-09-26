@@ -5,7 +5,7 @@ import { serve } from "https://deno.land/std@0.168.0/http/server.ts"
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2"
 
 const HF_API_URL =
-  "https://router.huggingface.co/hf-inference/models/mistralai/Mistral-7B-Instruct-v0.3/v1/chat/completions"
+  "https://router.huggingface.co/hf-inference/v1/chat/completions"
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -39,7 +39,7 @@ async function callHF(
   hfApiKey: string,
 ): Promise<{ rawText: string; warmingUp: boolean }> {
   const body = JSON.stringify({
-    model: "mistralai/Mistral-7B-Instruct-v0.3",
+    model: "HuggingFaceH4/zephyr-7b-beta",
     messages,
     max_tokens: 1024,
     temperature: 0.4,
