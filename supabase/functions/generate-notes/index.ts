@@ -1,16 +1,12 @@
 // supabase/functions/generate-notes/index.ts
-// Deno-compatible Edge Function using HF Router (OpenAI-compatible chat completions)
+// Uses Google Gemini 1.5 Flash (free tier) via REST API
 
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts"
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2"
 
-const HF_API_URL =
-  "https://router.huggingface.co/hf-inference/v1/chat/completions"
-
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers":
-    "authorization, x-client-info, apikey, content-type",
+  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
   "Access-Control-Allow-Methods": "POST, OPTIONS",
 }
 
@@ -24,7 +20,6 @@ Do not invent facts not present in the input notes.
 Respond with the JSON object and nothing else.`
 
 function extractJSON(text: string): string {
-  // Strip markdown fences
   const cleaned = text.replace(/```json\s*/gi, "").replace(/```\s*/gi, "").trim()
   const start = cleaned.indexOf("{")
   const end = cleaned.lastIndexOf("}")
@@ -34,106 +29,60 @@ function extractJSON(text: string): string {
   return cleaned.slice(start, end + 1)
 }
 
-async function callHF(
-  messages: { role: string; content: string }[],
-  hfApiKey: string,
-): Promise<{ rawText: string; warmingUp: boolean }> {
-  const body = JSON.stringify({
-    model: "Qwen/Qwen2.5-7B-Instruct",
-    messages,
-    max_tokens: 1024,
-    temperature: 0.4,
-  })
+async function callGemini(
+  prompt: string,
+  geminiApiKey: string,
+): Promise<string> {
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${geminiApiKey}`
 
-  let warmingUp = false
   const controller = new AbortController()
   const timeout = setTimeout(() => controller.abort(), 30_000)
 
   let response: Response
   try {
-    response = await fetch(HF_API_URL, {
+    response = await fetch(url, {
       method: "POST",
-      headers: {
-        Authorization: `Bearer ${hfApiKey}`,
-        "Content-Type": "application/json",
-      },
-      body,
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        contents: [{ parts: [{ text: prompt }] }],
+        generationConfig: {
+          temperature: 0.4,
+          maxOutputTokens: 1024,
+        },
+      }),
       signal: controller.signal,
     })
   } finally {
     clearTimeout(timeout)
   }
 
-  // Handle 503 cold start
-  if (response.status === 503) {
-    const errBody = await response.json().catch(() => ({}))
-    const estimatedTime = Math.min(errBody?.estimated_time ?? 20, 20)
-    console.log(`HF model loading, waiting ${estimatedTime}s…`)
-    warmingUp = true
-    await new Promise((r) => setTimeout(r, estimatedTime * 1000))
-
-    const retryController = new AbortController()
-    const retryTimeout = setTimeout(() => retryController.abort(), 30_000)
-    try {
-      response = await fetch(HF_API_URL, {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${hfApiKey}`,
-          "Content-Type": "application/json",
-        },
-        body,
-        signal: retryController.signal,
-      })
-    } finally {
-      clearTimeout(retryTimeout)
-    }
-  }
-
   if (!response.ok) {
     const text = await response.text()
-    throw new Error(`HF API error ${response.status}: ${text}`)
+    throw new Error(`Gemini API error ${response.status}: ${text}`)
   }
 
   const data = await response.json()
-  // OpenAI-compatible response shape
-  const rawText: string = data?.choices?.[0]?.message?.content ?? JSON.stringify(data)
-
-  console.log("HF raw response:", rawText.slice(0, 500))
-
-  return { rawText, warmingUp }
+  const rawText: string = data?.candidates?.[0]?.content?.parts?.[0]?.text ?? ""
+  console.log("Gemini raw response:", rawText.slice(0, 500))
+  return rawText
 }
 
 async function generateWithRetry(
   rawNotes: string,
   englishLevel: string,
-  hfApiKey: string,
-): Promise<{ generated_content: unknown; warmingUp: boolean }> {
-  const messages = [
-    { role: "system", content: SYSTEM_PROMPT(englishLevel) },
-    { role: "user", content: `Student notes:\n${rawNotes}` },
-  ]
+  geminiApiKey: string,
+): Promise<unknown> {
+  const prompt = `${SYSTEM_PROMPT(englishLevel)}\n\nStudent notes:\n${rawNotes}`
 
-  const { rawText: rawText1, warmingUp } = await callHF(messages, hfApiKey)
-
-  let parsed: unknown
+  const rawText1 = await callGemini(prompt, geminiApiKey)
   try {
-    parsed = JSON.parse(extractJSON(rawText1))
+    return JSON.parse(extractJSON(rawText1))
   } catch (_e) {
     console.warn("First parse failed, retrying with repair prompt…")
-    const repairMessages = [
-      ...messages,
-      { role: "assistant", content: rawText1 },
-      {
-        role: "user",
-        content:
-          "Your previous output was not valid JSON. Reply with ONLY the JSON object, starting with { and ending with }.",
-      },
-    ]
-    const { rawText: rawText2 } = await callHF(repairMessages, hfApiKey)
-    parsed = JSON.parse(extractJSON(rawText2))
+    const repairPrompt = `${prompt}\n\nYour previous output was not valid JSON. Reply with ONLY the JSON object, starting with { and ending with }.`
+    const rawText2 = await callGemini(repairPrompt, geminiApiKey)
+    return JSON.parse(extractJSON(rawText2))
   }
-
-  return { generated_content: parsed, warmingUp }
 }
 
 serve(async (req: Request) => {
@@ -142,9 +91,9 @@ serve(async (req: Request) => {
   }
 
   try {
-    const hfApiKey = Deno.env.get("HF_API_KEY")
-    if (!hfApiKey) {
-      return new Response(JSON.stringify({ error: "HF_API_KEY not set" }), {
+    const geminiApiKey = Deno.env.get("GEMINI_API_KEY")
+    if (!geminiApiKey) {
+      return new Response(JSON.stringify({ error: "GEMINI_API_KEY not set" }), {
         status: 500,
         headers: { ...corsHeaders, "Content-Type": "application/json" },
       })
@@ -181,14 +130,10 @@ serve(async (req: Request) => {
       )
     }
 
-    const { generated_content, warmingUp } = await generateWithRetry(
-      rawNotes,
-      englishLevel,
-      hfApiKey,
-    )
+    const generated_content = await generateWithRetry(rawNotes, englishLevel, geminiApiKey)
 
     return new Response(
-      JSON.stringify({ generated_content, warmingUp, noteSetId }),
+      JSON.stringify({ generated_content, noteSetId }),
       { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } },
     )
   } catch (err) {
